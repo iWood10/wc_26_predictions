@@ -47,6 +47,29 @@ echo "TELEGRAM_BOT_TOKEN=dein:token" > .env
 uv run main.py                   # Bot starten
 ```
 
+## Deployment (Docker)
+
+Auf dem Server (Repo ist öffentlich, Clone ohne Auth):
+
+```bash
+git clone https://github.com/iWood10/wc_26_predictions.git
+cd wc_26_predictions
+echo "TELEGRAM_BOT_TOKEN=dein:token" > .env   # Token einmalig anlegen
+docker compose up -d --build
+```
+
+`restart: unless-stopped` hält den Bot am Leben (Crash + Server-Reboot).
+Die Tipps/Ergebnisse liegen per Volume in `./data` auf dem Host und überleben
+Redeploys.
+
+**Update bei neuem Code:**
+
+```bash
+git pull && docker compose up -d --build
+```
+
+`git pull` berührt nie die Laufzeit-Daten (die sind gitignored).
+
 ## Daten
 
 - `data/tournament.json` – Spielplan + Gruppen (Quelle: openfootball, im Repo).

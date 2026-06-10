@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__/
+*.py[oc]
+.env
+
+# Laufzeit-Daten kommen per Volume vom Host – nicht ins Image backen
+data/results.json
+data/thirds.json
+data/deleted/
+data/bets/*
+!data/bets/.gitkeep

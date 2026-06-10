@@ -1,0 +1,7 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped        # überlebt Crash + Server-Reboot
+    env_file: .env                 # TELEGRAM_BOT_TOKEN (liegt nur auf dem Host)
+    volumes:
+      - ./data:/app/data           # Tipps/Ergebnisse persistent auf dem Host
