@@ -74,7 +74,8 @@ git pull && docker compose up -d --build
 
 - `data/tournament.json` – Spielplan + Gruppen (Quelle: openfootball, im Repo).
 - `data/bets/<name>.bet` – Tipps je Spieler (JSON-Inhalt). **Nicht** in git –
-  werden über den Bot gepflegt.
+  werden über den Bot gepflegt. Format-Beispiel: [`template.bet`](template.bet)
+  (`predictions`: Spiel-Nr → `"heim:auswärts"`, dazu `champion`).
 - `data/results.json` – eingetragene Ergebnisse. **Nicht** in git.
 - `data/thirds.json` – Zuordnung der besten Gruppendritten (einmalig Ende der
   Vorrunde zu setzen). **Nicht** in git.

@@ -5,6 +5,7 @@ Befehle:
     /history <name> [n]     Tipp-Historie eines Spielers (mit ✅❌)
     /matches [n]            nächste offene Spiele
     /result <nr> <ergebnis> Ergebnis eintragen/korrigieren  (z.B. /result 1 2:1)
+    /template               leere Tipp-Vorlage (.bet) herunterladen
     /get <name>             Tipp-Datei (.bet) herunterladen
     /delete <name>          Tipp-Datei löschen
     .bet-Datei schicken     Tipp-Datei hochladen/überschreiben
@@ -147,6 +148,9 @@ UPLOAD_EXTS = (BET_EXT, ".json")
 # Papierkorb für gelöschte Tipp-Dateien (load_bets schaut hier nicht rein).
 DELETED_DIR = BETS_DIR / "deleted"
 
+# Beispiel-Tipp-Datei im Repo-Root (zum Herunterladen via /template).
+TEMPLATE_FILE = BETS_DIR.parent.parent / "template.bet"
+
 
 def _bet_path(name: str) -> Path:
     """Sicherer Pfad in data/bets/ – nur Dateiname, keine Pfad-Tricks."""
@@ -186,6 +190,7 @@ HELP_TEXT = (
 ADVANCED_HELP_TEXT = (
     "🔧 <b>Erweitert – Verwalten</b>\n\n"
     "/result &lt;nr&gt; &lt;ergebnis&gt; – Ergebnis eintragen (z.B. /result 1 2:1)\n"
+    "/template – leere Tipp-Vorlage (.bet) herunterladen\n"
     "/get &lt;name&gt; – Tipp-Datei (.bet) herunterladen\n"
     "/delete &lt;name&gt; – Tipp-Datei löschen (Papierkorb)\n"
     ".bet-Datei schicken – Tipps hochladen/überschreiben"
@@ -239,6 +244,22 @@ def build_bot() -> telebot.TeleBot:
     def _result(msg):
         args = msg.text.split()[1:]
         bot.reply_to(msg, do_result(args))
+
+    @bot.message_handler(commands=["template"])
+    def _template(msg):
+        if not TEMPLATE_FILE.exists():
+            bot.reply_to(msg, "Kein Template vorhanden.")
+            return
+        with open(TEMPLATE_FILE, "rb") as f:
+            bot.send_document(
+                msg.chat.id,
+                f,
+                visible_file_name="template.bet",
+                caption=(
+                    "📄 Vorlage – ausfüllen, in <b>deinname.bet</b> umbenennen "
+                    "(Dateiname = Spielername!) und zurückschicken."
+                ),
+            )
 
     @bot.message_handler(commands=["get"])
     def _get(msg):
