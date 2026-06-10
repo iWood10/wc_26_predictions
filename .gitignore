@@ -1,0 +1,21 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Secrets
+.env
+
+# Laufzeit-Daten – leben auf dem Server, per Bot gepflegt (nicht in git,
+# sonst kollidiert jeder git pull mit den Live-Änderungen)
+data/results.json
+data/thirds.json
+data/deleted/
+data/bets/*
+!data/bets/.gitkeep
