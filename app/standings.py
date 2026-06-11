@@ -20,6 +20,27 @@ class HistoryRow:
     categories: list[bool]  # die 5 Häkchen
 
 
+@dataclass
+class TipEntry:
+    """Ein Spieler-Tipp für ein Spiel (für die kompakte Alle-Tipps-Ansicht)."""
+    name: str
+    prediction: str | None  # getipptes Ergebnis, None wenn nicht getippt
+    points: int             # 0 solange das Spiel kein Ergebnis hat
+
+
+def match_tips(
+    bets: list[Bet], match_id: int, actual: str | None
+) -> list[TipEntry]:
+    """Alle Spieler-Tipps zu einem Spiel. points sind nur aussagekräftig,
+    wenn das Spiel schon ein Ergebnis hat (sonst 0)."""
+    entries = []
+    for bet in bets:
+        prediction = bet.prediction_for(match_id)
+        points = score_match(prediction or "", actual).points if actual else 0
+        entries.append(TipEntry(name=bet.name, prediction=prediction, points=points))
+    return entries
+
+
 def champion_points(bet: Bet, champion: str | None) -> int:
     """65 Punkte, wenn der getippte Weltmeister stimmt."""
     if champion and bet.champion and bet.champion == champion:

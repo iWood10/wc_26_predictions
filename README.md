@@ -15,7 +15,7 @@ Pro Spiel max. **5 Punkte**:
 | Tore Auswärts absolut | 1 |
 | Bonus: exaktes Ergebnis (alle vier richtig) | 1 |
 
-Plus **65 Punkte** für den richtigen Weltmeister (wird automatisch aus dem
+Plus **50 Punkte** für den richtigen Weltmeister (wird automatisch aus dem
 Finale abgeleitet). K.o.-Spiele: nur das Endergebnis zählt (inkl. Verlängerung/
 Elfmeterschießen).
 
@@ -24,15 +24,21 @@ Elfmeterschießen).
 | Befehl | Zweck |
 |---|---|
 | `/board` | Leaderboard (mit 👑 Weltmeister, sobald er feststeht) |
-| `/history <name> [n]` | Tipp-Historie eines Spielers mit Kategorie-Häkchen |
-| `/matches [n]` | nächste offene Spiele + wie alle getippt haben |
+| `/champions` | wer hat wen als Weltmeister getippt |
+| `/upcoming [name] [n]` | nächste offene Spiele + Tipps |
+| `/history [name] [n]` | gespielte Spiele + Tipps (mit Name: Kategorie-Häkchen) |
 | `/result <nr> <ergebnis>` | Ergebnis eintragen/korrigieren (z.B. `/result 1 2:1`) |
 | `/get <name>` | Tipp-Datei (`.bet`) herunterladen |
+| `/getall` | alle Tipp-Dateien als ZIP herunterladen |
 | `/delete <name>` | Tipp-Datei löschen (Papierkorb) |
-| `.bet`-Datei schicken | Tipps hochladen/überschreiben |
+| `.bet`-Datei(en) schicken | Tipps hochladen/überschreiben (mehrere gleichzeitig möglich) |
+| ZIP schicken | alle enthaltenen Tipps auf einmal hochladen |
 | `/help` / `/help advanced` | Hilfe (einfach / Verwalten) |
 
-Vor `/board`, `/history`, `/matches` werden die Ergebnisse automatisch von
+Bei `/upcoming` und `/history` sind **name** (Spieler-Filter) und **n** (Anzahl
+Spiele) optional und in beliebiger Reihenfolge, z.B. `/upcoming mori 5`.
+
+Vor `/board`, `/history`, `/upcoming` werden die Ergebnisse automatisch von
 [openfootball](https://github.com/openfootball/worldcup.json) abgeglichen
 (gedrosselt auf max. 1× pro 60 s). `/result` überschreibt der Auto-Sync nie.
 

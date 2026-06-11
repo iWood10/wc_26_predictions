@@ -2,28 +2,37 @@
 
 Befehle:
     /board                  Leaderboard (mit 👑 Weltmeister, sobald er feststeht)
-    /history <name> [n]     Tipp-Historie eines Spielers (mit ✅❌)
-    /matches [n]            nächste offene Spiele
+    /champions              wer hat wen als Weltmeister getippt
+    /upcoming [name] [n]    nächste offene Spiele + Tipps
+    /history [name] [n]     gespielte Spiele + Tipps (mit Name: ✅❌-Detail)
     /result <nr> <ergebnis> Ergebnis eintragen/korrigieren  (z.B. /result 1 2:1)
     /template               leere Tipp-Vorlage (.bet) herunterladen
     /get <name>             Tipp-Datei (.bet) herunterladen
+    /getall                 alle Tipp-Dateien als ZIP herunterladen
     /delete <name>          Tipp-Datei löschen
-    .bet-Datei schicken     Tipp-Datei hochladen/überschreiben
+    .bet-Datei(en) schicken Tipp-Datei(en) hochladen/überschreiben
+    ZIP schicken            alle enthaltenen Tipps auf einmal hochladen
     /help                   diese Übersicht
 
-Ergebnisse werden vor /board, /history und /matches automatisch von
+Bei /upcoming und /history sind name (Spieler-Filter) und n (Anzahl Spiele)
+optional und in beliebiger Reihenfolge.
+
+Ergebnisse werden vor /board, /upcoming und /history automatisch von
 openfootball abgeglichen (gedrosselt auf max. 1× pro 60 s).
 
 Token kommt aus der Umgebungsvariable TELEGRAM_BOT_TOKEN (.env-Datei).
 Gestartet wird über main.py.
 """
 
+import io
 import json
 import os
 import re
 import threading
 import time
+import zipfile
 from datetime import datetime
+from html import escape
 from pathlib import Path
 
 import telebot
@@ -32,9 +41,13 @@ from dotenv import load_dotenv
 from app.bets import BET_EXT, BETS_DIR, load_bets
 from app.bracket import build_bracket
 from app.results import load_results, set_match_result
-from app.standings import history, leaderboard
+from app.scoring import parse_score
+from app.standings import history, leaderboard, match_tips
 from app.sync import sync_results
 from app.tournament import load_matches
+
+# Default-Anzahl Spiele für /upcoming und /history ohne Zahl-Argument.
+DEFAULT_LIMIT = 10
 
 # Spielplan ist statisch – einmal laden.
 MATCHES = load_matches()
@@ -52,6 +65,42 @@ def _cats(categories: list[bool]) -> str:
     return "".join("✅" if c else "❌" for c in categories)
 
 
+def _parse_filter_args(parts: list[str]) -> tuple[str | None, int | None]:
+    """Aus den Argumenten Name (erstes Nicht-Zahl-Token) und Limit (erste Zahl)
+    ziehen – Reihenfolge egal. z.B. ['mori', '5'] oder ['5', 'mori']."""
+    name: str | None = None
+    limit: int | None = None
+    for token in parts:
+        if token.isdigit():
+            if limit is None:
+                limit = int(token)
+        elif name is None:
+            name = token
+    return name, limit
+
+
+def _resolve_bet(name: str, bets: list) -> tuple[object | None, str]:
+    """Sucht einen Spieler (case-insensitiv). Gibt (bet, fehlertext) zurück –
+    bet=None + Fehlertext, wenn es den Namen nicht gibt."""
+    bet = next((b for b in bets if b.name.lower() == name.lower()), None)
+    if bet is None:
+        spieler = ", ".join(escape(b.name) for b in bets) or "—"
+        return None, f"Kein Spieler '{escape(name)}' – bekannt: {spieler}"
+    return bet, ""
+
+
+def _tip_line(entries, *, show_points: bool) -> str:
+    """Kompakte Tipp-Zeile: 'mori 2:1 · ben 1:1' (mit Punkten wenn show_points)."""
+    parts = []
+    for e in entries:
+        if e.prediction is None:
+            continue
+        tip = escape(e.prediction)
+        name = escape(e.name)
+        parts.append(f"{name} {tip} ({e.points})" if show_points else f"{name} {tip}")
+    return " · ".join(parts) if parts else "(noch keine Tipps)"
+
+
 def format_board() -> str:
     bets = load_bets()
     if not bets:
@@ -63,47 +112,99 @@ def format_board() -> str:
     width = max(len(bet.name) for bet, _ in ranked)
     lines = ["🏆 <b>Leaderboard</b>", "<pre>"]
     for rank, (bet, points) in enumerate(ranked, start=1):
-        lines.append(f"{rank}. {bet.name:<{width}}  {points:>4}")
+        lines.append(f"{rank}. {escape(f'{bet.name:<{width}}')}  {points:>4}")
     lines.append("</pre>")
     if champion:
-        lines.append(f"👑 Weltmeister: <b>{champion}</b>")
+        lines.append(f"👑 Weltmeister: <b>{escape(champion)}</b>")
     return "\n".join(lines)
 
 
-def format_history(name: str, limit: int | None) -> str:
-    bet = next((b for b in load_bets() if b.name.lower() == name.lower()), None)
-    if bet is None:
-        spieler = ", ".join(b.name for b in load_bets()) or "—"
-        return f"Kein Spieler '{name}' – bekannt: {spieler}"
+def format_champions() -> str:
+    """Wer hat wen als Weltmeister getippt. Treffer wird markiert, sobald
+    der echte Champion (aus dem Finale) feststeht."""
+    bets = load_bets()
+    if not bets:
+        return "Noch keine Tipps abgegeben."
+    champion = build_bracket(MATCHES, load_results()).champion()
 
-    results = load_results()
-    bracket = build_bracket(MATCHES, results)
-    rows = history(bet, results, MATCHES, limit, bracket)
-    if not rows:
-        return f"Für {bet.name} sind noch keine gespielten Spiele da."
-
-    out = [f"📜 <b>History — {bet.name}</b>", f"<i>{CATEGORY_LEGEND}</i>", ""]
-    for r in rows:
-        tip = r.prediction or "—"
-        out.append(f"<b>#{r.match_id}</b> {r.team1} – {r.team2}  {r.result}")
-        out.append(f"   Tipp {tip} → {r.points} Pkt  {_cats(r.categories)}")
+    width = max(len(b.name) for b in bets)
+    out = ["👑 <b>Weltmeister-Tipps</b>", "<pre>"]
+    for bet in sorted(bets, key=lambda b: b.name.lower()):
+        pick = bet.champion or "—"
+        hit = " ✅" if champion and bet.champion == champion else ""
+        out.append(f"{escape(f'{bet.name:<{width}}')}  → {escape(pick)}{hit}")
+    out.append("</pre>")
+    if champion:
+        out.append(f"Steht fest: <b>{escape(champion)}</b>")
     return "\n".join(out)
 
 
-def format_matches(limit: int = 10) -> str:
+def _teams_for(bracket, m) -> tuple[str, str]:
+    """Aufgelöste, HTML-escapte Teamnamen (fällt auf den Platzhalter zurück)."""
+    t1, t2 = bracket.teams_for(m.id)
+    return escape(t1 or m.team1), escape(t2 or m.team2)
+
+
+def format_upcoming(name: str | None, limit: int | None) -> str:
+    """Nächste offene Spiele + Tipps. name filtert auf einen Spieler,
+    limit begrenzt die Anzahl Spiele (Default DEFAULT_LIMIT)."""
+    bets = load_bets()
     results = load_results()
     bracket = build_bracket(MATCHES, results)
-    bets = load_bets()
+
+    title = "📅 <b>Nächste offene Spiele</b>"
+    if name is not None:
+        bet, err = _resolve_bet(name, bets)
+        if bet is None:
+            return err
+        bets = [bet]
+        title = f"📅 <b>Nächste Spiele — {escape(bet.name)}</b>"
+
     pending = [m for m in MATCHES if results.result_for(m.id) is None]
     if not pending:
         return "Alle Spiele sind eingetragen. 🎉"
 
-    out = ["📅 <b>Nächste offene Spiele</b>", "<pre>"]
-    for m in pending[:limit]:
-        t1, t2 = bracket.teams_for(m.id)
-        out.append(f"#{m.id} {(t1 or m.team1)} – {(t2 or m.team2)}  ({m.date})")
-        tips = [f"{b.name} {b.prediction_for(m.id)}" for b in bets if b.prediction_for(m.id)]
-        out.append("   " + (" · ".join(tips) if tips else "(noch keine Tipps)"))
+    out = [title, "<pre>"]
+    for m in pending[: limit or DEFAULT_LIMIT]:
+        t1, t2 = _teams_for(bracket, m)
+        out.append(f"#{m.id} {t1} – {t2}  ({m.date})")
+        out.append("   " + _tip_line(match_tips(bets, m.id, None), show_points=False))
+    out.append("</pre>")
+    return "\n".join(out)
+
+
+def format_history(name: str | None, limit: int | None) -> str:
+    """Gespielte Spiele, neueste zuerst. Ohne Name: alle Tipps kompakt + Ergebnis.
+    Mit Name: Detail-Häkchen + Punkte für diesen Spieler."""
+    bets = load_bets()
+    results = load_results()
+    bracket = build_bracket(MATCHES, results)
+
+    if name is not None:
+        bet, err = _resolve_bet(name, bets)
+        if bet is None:
+            return err
+        rows = history(bet, results, MATCHES, limit or DEFAULT_LIMIT, bracket)
+        if not rows:
+            return f"Für {escape(bet.name)} sind noch keine gespielten Spiele da."
+        out = [f"📜 <b>History — {escape(bet.name)}</b>", f"<i>{CATEGORY_LEGEND}</i>", ""]
+        for r in rows:
+            tip = escape(r.prediction) if r.prediction else "—"
+            out.append(f"<b>#{r.match_id}</b> {escape(r.team1)} – {escape(r.team2)}  {escape(r.result)}")
+            out.append(f"   Tipp {tip} → {r.points} Pkt  {_cats(r.categories)}")
+        return "\n".join(out)
+
+    played = [m for m in MATCHES if results.result_for(m.id) is not None]
+    if not played:
+        return "Noch keine Spiele gespielt."
+    played.reverse()  # neueste (höchste ID) zuerst
+
+    out = ["📜 <b>History</b>", "<pre>"]
+    for m in played[: limit or DEFAULT_LIMIT]:
+        t1, t2 = _teams_for(bracket, m)
+        actual = results.result_for(m.id)
+        out.append(f"#{m.id} {t1} – {t2}  {escape(actual)}")
+        out.append("   " + _tip_line(match_tips(bets, m.id, actual), show_points=True))
     out.append("</pre>")
     return "\n".join(out)
 
@@ -113,14 +214,19 @@ def do_result(args: list[str]) -> str:
         return "Nutzung: <code>/result &lt;nr&gt; &lt;ergebnis&gt;</code>\nz.B. <code>/result 1 2:1</code>"
     id_str, score = args
     if not id_str.isdigit() or int(id_str) not in MATCHES_BY_ID:
-        return f"Kein Spiel #{id_str}. Spiele 1–104."
+        return f"Kein Spiel #{escape(id_str)}. Spiele 1–104."
     match_id = int(id_str)
+
+    parsed = parse_score(score)
+    if parsed is None:
+        return f"Ungültiges Ergebnis '{escape(score)}'. Format: <code>heim:auswärts</code>, z.B. 2:1."
+    score = f"{parsed[0]}:{parsed[1]}"  # normalisiert ("2-1" -> "2:1")
 
     old = load_results().result_for(match_id)
     set_match_result(match_id, score)
     m = MATCHES_BY_ID[match_id]
-    suffix = f" (vorher {old})" if old and old != score else ""
-    return f"✅ <b>#{match_id}</b> {m.team1} – {m.team2}: <b>{score}</b> eingetragen{suffix}"
+    suffix = f" (vorher {escape(old)})" if old and old != score else ""
+    return f"✅ <b>#{match_id}</b> {escape(m.team1)} – {escape(m.team2)}: <b>{score}</b> eingetragen{suffix}"
 
 
 # Lazy-Sync: vor Lese-Befehlen openfootball abgleichen, aber gedrosselt.
@@ -178,12 +284,50 @@ def _tip_count(path: Path) -> int | None:
         return None
 
 
+def _save_bet(file_name: str, raw: bytes) -> str:
+    """Validiert + speichert eine einzelne Tipp-Datei. Gibt die Antwortzeile zurück."""
+    label = escape(file_name)
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        return f"❌ {label}: nicht lesbar ({exc})"
+    err = _validate_bet(data)
+    if err:
+        return f"❌ {label}: {err}"
+    path = _bet_path(file_name)
+    if path.name == BET_EXT:  # Name auf nichts Gültiges reduziert
+        return f"❌ {label}: ungültiger Dateiname (erlaubt: Buchstaben, Zahlen, _ und -)."
+    old = _tip_count(path) if path.exists() else None
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    new = len(data.get("predictions", {}))
+    suffix = f" (vorher {old})" if old is not None else ""
+    return f"✅ <b>{path.name}</b> – {new} Tipps{suffix}"
+
+
+def _save_zip(raw: bytes) -> str:
+    """Entpackt ein hochgeladenes ZIP und speichert alle .bet/.json darin."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(raw))
+    except Exception as exc:
+        return f"❌ ZIP nicht lesbar: {exc}"
+    members = [
+        n for n in archive.namelist()
+        if not n.endswith("/") and n.lower().endswith(UPLOAD_EXTS)
+    ]
+    if not members:
+        return "❌ ZIP enthält keine .bet/.json-Dateien."
+    lines = [_save_bet(Path(n).name, archive.read(n)) for n in members]
+    return f"📦 {len(members)} Dateien aus ZIP:\n" + "\n".join(lines)
+
+
 HELP_TEXT = (
     "⚽ <b>WM 26 Tippspiel</b>\n\n"
     "/board – Leaderboard\n"
-    "/history &lt;name&gt; [n] – Tipp-Historie\n"
-    "/matches [n] – nächste offene Spiele\n"
-    "/help – diese Übersicht\n\n"
+    "/champions – wer hat wen als Weltmeister getippt\n"
+    "/upcoming [name] [n] – nächste offene Spiele + Tipps\n"
+    "/history [name] [n] – gespielte Spiele + Tipps\n"
+    "<i>name filtert auf einen Spieler, n = wie viele Spiele.</i>\n\n"
+    "/help – diese Übersicht\n"
     "<i>Verwalten: /help advanced</i>"
 )
 
@@ -192,8 +336,10 @@ ADVANCED_HELP_TEXT = (
     "/result &lt;nr&gt; &lt;ergebnis&gt; – Ergebnis eintragen (z.B. /result 1 2:1)\n"
     "/template – leere Tipp-Vorlage (.bet) herunterladen\n"
     "/get &lt;name&gt; – Tipp-Datei (.bet) herunterladen\n"
+    "/getall – alle Tipp-Dateien als ZIP herunterladen\n"
     "/delete &lt;name&gt; – Tipp-Datei löschen (Papierkorb)\n"
-    ".bet-Datei schicken – Tipps hochladen/überschreiben"
+    ".bet-Datei(en) schicken – Tipps hochladen/überschreiben\n"
+    "ZIP schicken – alle enthaltenen Tipps auf einmal hochladen"
 )
 
 
@@ -222,22 +368,21 @@ def build_bot() -> telebot.TeleBot:
         _auto_sync()
         bot.reply_to(msg, format_board())
 
-    @bot.message_handler(commands=["matches"])
-    def _matches(msg):
+    @bot.message_handler(commands=["champions"])
+    def _champions(msg):
         _auto_sync()
-        parts = msg.text.split()
-        limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 10
-        bot.reply_to(msg, format_matches(limit))
+        bot.reply_to(msg, format_champions())
+
+    @bot.message_handler(commands=["upcoming"])
+    def _upcoming(msg):
+        _auto_sync()
+        name, limit = _parse_filter_args(msg.text.split()[1:])
+        bot.reply_to(msg, format_upcoming(name, limit))
 
     @bot.message_handler(commands=["history"])
     def _history(msg):
         _auto_sync()
-        parts = msg.text.split()
-        if len(parts) < 2:
-            bot.reply_to(msg, "Nutzung: <code>/history &lt;name&gt; [n]</code>")
-            return
-        name = parts[1]
-        limit = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+        name, limit = _parse_filter_args(msg.text.split()[1:])
         bot.reply_to(msg, format_history(name, limit))
 
     @bot.message_handler(commands=["result"])
@@ -265,48 +410,61 @@ def build_bot() -> telebot.TeleBot:
     def _get(msg):
         parts = msg.text.split()
         if len(parts) < 2:
-            names = ", ".join(b.name for b in load_bets()) or "—"
+            names = ", ".join(escape(b.name) for b in load_bets()) or "—"
             bot.reply_to(msg, f"Nutzung: <code>/get &lt;name&gt;</code>\nVorhanden: {names}")
             return
         path = _bet_path(parts[1])
         if not path.exists():
-            bot.reply_to(msg, f"Kein Tipp-File '{parts[1]}'.")
+            bot.reply_to(msg, f"Kein Tipp-File '{escape(parts[1])}'.")
             return
         with open(path, "rb") as f:
             bot.send_document(msg.chat.id, f, visible_file_name=path.name, caption=f"📄 {path.name}")
 
+    @bot.message_handler(commands=["getall"])
+    def _getall(msg):
+        paths = sorted(BETS_DIR.glob(f"*{BET_EXT}"))
+        if not paths:
+            bot.reply_to(msg, "Keine Tipp-Dateien vorhanden.")
+            return
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for p in paths:
+                zf.write(p, arcname=p.name)
+        buf.seek(0)
+        bot.send_document(
+            msg.chat.id,
+            buf,
+            visible_file_name="bets.zip",
+            caption=f"📦 {len(paths)} Tipp-Dateien – zum Wiederherstellen einfach zurückschicken.",
+        )
+
     @bot.message_handler(content_types=["document"])
     def _upload(msg):
         doc = msg.document
-        if not doc.file_name.lower().endswith(UPLOAD_EXTS):
+        fname = doc.file_name.lower()
+        if not fname.endswith(UPLOAD_EXTS) and not fname.endswith(".zip"):
             return  # andere Dateien still ignorieren (z.B. in Gruppenchats)
         try:
             info = bot.get_file(doc.file_id)
-            data = json.loads(bot.download_file(info.file_path).decode("utf-8"))
+            raw = bot.download_file(info.file_path)
         except Exception as exc:
             bot.reply_to(msg, f"❌ Konnte Datei nicht lesen: {exc}")
             return
-        err = _validate_bet(data)
-        if err:
-            bot.reply_to(msg, f"❌ Datei abgelehnt: {err}")
-            return
-        path = _bet_path(doc.file_name)
-        old = _tip_count(path) if path.exists() else None
-        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-        new = len(data.get("predictions", {}))
-        suffix = f" (vorher {old})" if old is not None else ""
-        bot.reply_to(msg, f"✅ <b>{path.name}</b> gespeichert – {new} Tipps{suffix}")
+        if fname.endswith(".zip"):
+            bot.reply_to(msg, _save_zip(raw))
+        else:
+            bot.reply_to(msg, _save_bet(doc.file_name, raw))
 
     @bot.message_handler(commands=["delete"])
     def _delete(msg):
         parts = msg.text.split()
         if len(parts) < 2:
-            names = ", ".join(b.name for b in load_bets()) or "—"
+            names = ", ".join(escape(b.name) for b in load_bets()) or "—"
             bot.reply_to(msg, f"Nutzung: <code>/delete &lt;name&gt;</code>\nVorhanden: {names}")
             return
         path = _bet_path(parts[1])
         if not path.exists():
-            bot.reply_to(msg, f"Kein Tipp-File '{parts[1]}'.")
+            bot.reply_to(msg, f"Kein Tipp-File '{escape(parts[1])}'.")
             return
         tips = _tip_count(path)
         DELETED_DIR.mkdir(parents=True, exist_ok=True)
