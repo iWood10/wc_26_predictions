@@ -163,6 +163,7 @@ def format_upcoming(name: str | None, limit: int | None) -> str:
     pending = [m for m in MATCHES if results.result_for(m.id) is None]
     if not pending:
         return "Alle Spiele sind eingetragen. 🎉"
+    pending.sort(key=lambda m: (m.date, m.id))  # chronologisch, nicht nach ID
 
     out = [title, "<pre>"]
     for m in pending[: limit or DEFAULT_LIMIT]:
@@ -197,7 +198,7 @@ def format_history(name: str | None, limit: int | None) -> str:
     played = [m for m in MATCHES if results.result_for(m.id) is not None]
     if not played:
         return "Noch keine Spiele gespielt."
-    played.reverse()  # neueste (höchste ID) zuerst
+    played.sort(key=lambda m: (m.date, m.id), reverse=True)  # neueste zuerst (chronologisch)
 
     out = ["📜 <b>History</b>", "<pre>"]
     for m in played[: limit or DEFAULT_LIMIT]:
