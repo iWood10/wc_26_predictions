@@ -42,27 +42,30 @@ def match_tips(
 
 
 def champion_points(bet: Bet, champion: str | None) -> int:
-    """65 Punkte, wenn der getippte Weltmeister stimmt."""
+    """CHAMPION_POINTS Punkte, wenn der getippte Weltmeister stimmt."""
     if champion and bet.champion and bet.champion == champion:
         return CHAMPION_POINTS
     return 0
 
 
-def total_points(bet: Bet, results: Results, champion: str | None) -> int:
-    """Gesamtpunktzahl eines Spielers: alle Spiele + Weltmeister-Bonus."""
+def total_points(
+    bet: Bet, results: Results, champion: str | None, scorer=score_match
+) -> int:
+    """Gesamtpunktzahl eines Spielers: alle Spiele + Weltmeister-Bonus.
+    scorer wählt die Wertung (score_match = Standard, score_match_alt = Alt)."""
     total = 0
     for match_id_str, actual in results.matches.items():
         prediction = bet.predictions.get(match_id_str)
         if prediction is not None:
-            total += score_match(prediction, actual).points
+            total += scorer(prediction, actual).points
     return total + champion_points(bet, champion)
 
 
 def leaderboard(
-    bets: list[Bet], results: Results, champion: str | None
+    bets: list[Bet], results: Results, champion: str | None, scorer=score_match
 ) -> list[tuple[Bet, int]]:
     """Spieler nach Punkten sortiert (höchste zuerst)."""
-    ranked = [(bet, total_points(bet, results, champion)) for bet in bets]
+    ranked = [(bet, total_points(bet, results, champion, scorer)) for bet in bets]
     ranked.sort(key=lambda pair: pair[1], reverse=True)
     return ranked
 
@@ -105,7 +108,8 @@ def history(
             )
         )
 
-    rows.sort(key=lambda r: r.match_id, reverse=True)
+    # neueste zuerst, chronologisch (Datum) – nicht nach FIFA-ID
+    rows.sort(key=lambda r: (by_id[r.match_id].date, r.match_id), reverse=True)
     if limit is not None:
         rows = rows[:limit]
     return rows

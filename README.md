@@ -19,15 +19,33 @@ Plus **50 Punkte** für den richtigen Weltmeister (wird automatisch aus dem
 Finale abgeleitet). K.o.-Spiele: nur das Endergebnis zählt (inkl. Verlängerung/
 Elfmeterschießen).
 
+### Alternative Wertung (`/board alt`)
+
+Gleicher Max (5 Punkte/Spiel), aber leicht andere Kriterien:
+
+| Kriterium | Punkte |
+|---|---|
+| Richtiger Ausgang (Sieg/Unentschieden/Niederlage) | 1 |
+| Richtige Tordifferenz | 1 |
+| Richtige Toranzahl einer Seite (Heim **oder** Auswärts **oder** beide) | 1 |
+| Richtige Gesamtzahl Tore (Heim + Auswärts) | 1 |
+| Bonus: wenn alle vier stimmen | 1 |
+
+Der Weltmeister-Bonus (50) bleibt gleich. `/board alt` ändert nur die Spiel-Wertung
+und schreibt nichts – es ist eine reine Vergleichsansicht.
+
 ## Befehle
 
 | Befehl | Zweck |
 |---|---|
 | `/board` | Leaderboard (mit 👑 Weltmeister, sobald er feststeht) |
+| `/board alt` | Leaderboard mit alternativer Spiel-Wertung (s.u.) |
 | `/champions` | wer hat wen als Weltmeister getippt |
 | `/upcoming [name] [n]` | nächste offene Spiele + Tipps |
 | `/history [name] [n]` | gespielte Spiele + Tipps (mit Name: Kategorie-Häkchen) |
 | `/result <nr> <ergebnis>` | Ergebnis eintragen/korrigieren (z.B. `/result 1 2:1`) |
+| `/ko <name> [nr]` | K.o.-Spiele durchtippen (`nr` = ein Spiel neu tippen) |
+| `/setthirds` | Gruppendritte aus openfootball ableiten → schaltet `/ko` frei |
 | `/get <name>` | Tipp-Datei (`.bet`) herunterladen |
 | `/getall` | alle Tipp-Dateien als ZIP herunterladen |
 | `/delete <name>` | Tipp-Datei löschen (Papierkorb) |
@@ -37,6 +55,27 @@ Elfmeterschießen).
 
 Bei `/upcoming` und `/history` sind **name** (Spieler-Filter) und **n** (Anzahl
 Spiele) optional und in beliebiger Reihenfolge, z.B. `/upcoming mori 5`.
+
+### K.o.-Runde tippen (`/ko <name>`)
+
+Interaktiv, ein Spiel nach dem anderen: Der Bot zeigt die Paarung – **aufgelöst aus
+den eigenen Tipps des Spielers** (Gruppentabellen + bisherige K.o.-Sieger) – und man
+antwortet mit dem Ergebnis (`7:1`). Sechzehntel: `Deutschland – Schottland`; höhere
+Runden zeigen die Quell-Paarung plus die resultierenden Teams. Reihenfolge: alle
+Sechzehntel → Achtel → Viertel → … → Finale (IDs 73–104).
+
+- Bricht man ab (anderer Befehl, keine Antwort), pausiert der Flow. `/ko <name>`
+  setzt fort, wo das erste Ergebnis fehlt – der Status steckt in der `.bet`.
+- `/ko <name> <nr>` tippt gezielt **ein** Spiel (73–104) neu (z.B. Tippfehler
+  korrigieren) und stoppt danach; zeigt den vorherigen Tipp mit an.
+- K.o.-Spiele brauchen einen Sieger: ein Unentschieden wird abgelehnt (Elfmeterschießen).
+- **Freigeschaltet erst, wenn `data/thirds.json` gesetzt ist** (Ende der Vorrunde) –
+  vorher können die Gruppendritten-Gegner im Sechzehntelfinale nicht aufgelöst werden.
+  Mit **`/setthirds`** wird die Datei automatisch aus openfootball abgeleitet (sobald
+  die Quelle die Dritten-Slots aufgelöst hat); meldet sonst, wie viele Slots noch offen
+  sind. Alternativ `data/thirds.json` von Hand anlegen (`Slot → Gruppenbuchstabe`).
+- Am besten im **Direktchat** mit dem Bot nutzen (der Flow merkt sich den nächsten
+  Schritt pro Chat).
 
 Vor `/board`, `/history`, `/upcoming` werden die Ergebnisse automatisch von
 [openfootball](https://github.com/openfootball/worldcup.json) abgeglichen

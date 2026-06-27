@@ -1,11 +1,13 @@
 """Telegram-Bot des WM-26-Tippspiels.
 
 Befehle:
-    /board                  Leaderboard (mit 👑 Weltmeister, sobald er feststeht)
+    /board [alt]            Leaderboard (alt = alternative Spiel-Wertung)
     /champions              wer hat wen als Weltmeister getippt
     /upcoming [name] [n]    nächste offene Spiele + Tipps
     /history [name] [n]     gespielte Spiele + Tipps (mit Name: ✅❌-Detail)
     /result <nr> <ergebnis> Ergebnis eintragen/korrigieren  (z.B. /result 1 2:1)
+    /ko <name> [nr]         K.o.-Spiele interaktiv durchtippen (nr = eins neu tippen)
+    /setthirds              Gruppendritte aus openfootball ableiten -> thirds.json
     /template               leere Tipp-Vorlage (.bet) herunterladen
     /get <name>             Tipp-Datei (.bet) herunterladen
     /getall                 alle Tipp-Dateien als ZIP herunterladen
@@ -39,11 +41,11 @@ import telebot
 from dotenv import load_dotenv
 
 from app.bets import BET_EXT, BETS_DIR, load_bets
-from app.bracket import build_bracket
-from app.results import load_results, set_match_result
-from app.scoring import parse_score
+from app.bracket import THIRDS_FILE, build_bracket, load_thirds
+from app.results import Results, load_results, set_match_result
+from app.scoring import parse_score, score_match, score_match_alt
 from app.standings import history, leaderboard, match_tips
-from app.sync import sync_results
+from app.sync import _is_placeholder, fetch_remote, sync_results
 from app.tournament import load_matches
 
 # Default-Anzahl Spiele für /upcoming und /history ohne Zahl-Argument.
@@ -101,16 +103,18 @@ def _tip_line(entries, *, show_points: bool) -> str:
     return " · ".join(parts) if parts else "(noch keine Tipps)"
 
 
-def format_board() -> str:
+def format_board(alt: bool = False) -> str:
     bets = load_bets()
     if not bets:
         return "Noch keine Tipps abgegeben."
     results = load_results()
     champion = build_bracket(MATCHES, results).champion()
-    ranked = leaderboard(bets, results, champion)
+    scorer = score_match_alt if alt else score_match
+    ranked = leaderboard(bets, results, champion, scorer)
 
     width = max(len(bet.name) for bet, _ in ranked)
-    lines = ["🏆 <b>Leaderboard</b>", "<pre>"]
+    title = "🏆 <b>Leaderboard (Alt-Wertung)</b>" if alt else "🏆 <b>Leaderboard</b>"
+    lines = [title, "<pre>"]
     for rank, (bet, points) in enumerate(ranked, start=1):
         lines.append(f"{rank}. {escape(f'{bet.name:<{width}}')}  {points:>4}")
     lines.append("</pre>")
@@ -226,8 +230,10 @@ def do_result(args: list[str]) -> str:
     old = load_results().result_for(match_id)
     set_match_result(match_id, score)
     m = MATCHES_BY_ID[match_id]
+    # K.o.-Platzhalter ("W74") über den echten Bracket zu Teamnamen auflösen
+    t1, t2 = _teams_for(build_bracket(MATCHES, load_results()), m)
     suffix = f" (vorher {escape(old)})" if old and old != score else ""
-    return f"✅ <b>#{match_id}</b> {escape(m.team1)} – {escape(m.team2)}: <b>{score}</b> eingetragen{suffix}"
+    return f"✅ <b>#{match_id}</b> {t1} – {t2}: <b>{score}</b> eingetragen{suffix}"
 
 
 # Lazy-Sync: vor Lese-Befehlen openfootball abgleichen, aber gedrosselt.
@@ -321,9 +327,191 @@ def _save_zip(raw: bytes) -> str:
     return f"📦 {len(members)} Dateien aus ZIP:\n" + "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# K.o.-Runde tippen (/ko) – interaktiv, ein Spiel nach dem anderen
+# ---------------------------------------------------------------------------
+
+KO_FIRST, KO_LAST = 73, 104  # Spanne der K.o.-Spiel-IDs (Sechzehntel … Finale)
+
+_KO_ROUND_DE = {
+    "Round of 32": "Sechzehntelfinale",
+    "Round of 16": "Achtelfinale",
+    "Quarter-final": "Viertelfinale",
+    "Semi-final": "Halbfinale",
+    "Match for third place": "Spiel um Platz 3",
+    "Final": "Finale",
+}
+
+
+def _load_predictions(name: str) -> dict[str, str]:
+    """Tipps eines Spielers frisch von der Platte (Status des K.o.-Flows)."""
+    data = json.loads(_bet_path(name).read_text(encoding="utf-8"))
+    return data.get("predictions", {})
+
+
+def _save_ko_pred(name: str, match_id: int, score: str) -> None:
+    """Schreibt einen einzelnen K.o.-Tipp in die .bet-Datei des Spielers."""
+    path = _bet_path(name)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data.setdefault("predictions", {})[str(match_id)] = score
+    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _ko_describe(bracket, token: str) -> tuple[str, str | None]:
+    """(Feeder-Label, aufgelöstes Team) für einen K.o.-Platzhalter.
+
+    'W74'/'L101' → Feeder = beide Teams des Quellspiels ('A/B'), Team = Sieger/Verlierer.
+    Gruppen-Slot ('1E', '3A/B/...') → Feeder == aufgelöstes Team."""
+    resolved = bracket.resolve_token(token)
+    m = re.match(r"^[WL](\d+)$", token)
+    if m:
+        t1, t2 = bracket.teams_for(int(m.group(1)))
+        return f"{t1 or '?'}/{t2 or '?'}", resolved
+    return resolved or "?", resolved
+
+
+def _ko_prompt(match, bracket) -> str:
+    """Anzeige einer K.o.-Paarung, aufgelöst aus den Tipps des Spielers."""
+    rnd = _KO_ROUND_DE.get(match.round, match.round)
+    a_feeder, a_team = _ko_describe(bracket, match.team1)
+    b_feeder, b_team = _ko_describe(bracket, match.team2)
+    head = f"🏆 <b>{rnd}</b> — #{match.id}"
+    if match.round == "Round of 32":  # beide Seiten direkt aus den Gruppen
+        body = f"<b>{escape(a_team or '?')} – {escape(b_team or '?')}</b>"
+    else:
+        body = (
+            f"{escape(a_feeder)}  vs  {escape(b_feeder)}\n"
+            f"laut deinen Tipps: <b>{escape(a_team or '?')} – {escape(b_team or '?')}</b>"
+        )
+    return f"{head}\n{body}\n\nErgebnis? (z.B. <code>2:1</code>)"
+
+
+def ko_present(bot, chat_id: int, name: str, match_id: int, advance: bool) -> None:
+    """Zeigt ein bestimmtes K.o.-Spiel und wartet auf das Ergebnis.
+    advance=True → danach automatisch zum nächsten offenen Spiel."""
+    bracket = build_bracket(MATCHES, Results(matches=dict(_load_predictions(name))))
+    bot.send_message(chat_id, _ko_prompt(MATCHES_BY_ID[match_id], bracket))
+    bot.register_next_step_handler_by_chat_id(
+        chat_id, lambda m: ko_step(bot, m, name, match_id, advance)
+    )
+
+
+def ko_send_next(bot, chat_id: int, name: str) -> None:
+    """Schickt das nächste noch nicht getippte K.o.-Spiel – oder meldet 'fertig'."""
+    preds = _load_predictions(name)
+    match_id = next(
+        (i for i in range(KO_FIRST, KO_LAST + 1) if str(i) not in preds), None
+    )
+    if match_id is None:
+        bot.send_message(chat_id, f"🏁 Alle K.o.-Spiele für <b>{escape(name)}</b> sind getippt!")
+        return
+    ko_present(bot, chat_id, name, match_id, advance=True)
+
+
+def ko_step(bot, msg, name: str, match_id: int, advance: bool = True) -> None:
+    """Verarbeitet die Antwort auf ein K.o.-Spiel im laufenden /ko-Flow."""
+    text = (msg.text or "").strip()
+    parsed = parse_score(text)
+    if parsed is None:
+        # Kein Ergebnis → Session pausiert. Befehle normal weiterlaufen lassen.
+        if text.startswith("/"):
+            try:
+                bot.process_new_messages([msg])
+            except Exception:  # Passthrough darf den Bot nie hängen lassen
+                bot.reply_to(msg, f"⏸️ K.o.-Tippen pausiert – <code>/ko {escape(name)}</code> setzt fort.")
+        else:
+            bot.reply_to(msg, f"⏸️ K.o.-Tippen pausiert – <code>/ko {escape(name)}</code> setzt fort.")
+        return
+    h, a = parsed
+    if h == a:
+        bot.reply_to(msg, "K.o.-Spiel braucht einen Sieger (Elfmeterschießen entscheidet). Nochmal:")
+        bot.register_next_step_handler_by_chat_id(
+            msg.chat.id, lambda m: ko_step(bot, m, name, match_id, advance)
+        )
+        return
+    score = f"{h}:{a}"
+    old = _load_predictions(name).get(str(match_id))
+    _save_ko_pred(name, match_id, score)
+    note = f" (vorher {escape(old)})" if old and old != score else ""
+    bot.reply_to(msg, f"✅ #{match_id}: <b>{score}</b>{note}")
+    if advance:
+        ko_send_next(bot, msg.chat.id, name)
+
+
+def _slot_groups(token: str) -> set[str]:
+    """Erlaubte Gruppenbuchstaben eines Dritten-Slots: '3A/B/C/D/F' -> {A,B,C,D,F}."""
+    return set(token[1:].split("/"))
+
+
+def do_setthirds() -> str:
+    """Leitet data/thirds.json aus den von openfootball aufgelösten K.o.-Paarungen ab.
+
+    Für jedes Sechzehntel mit Dritten-Slot wird das reale Team aus der API gelesen,
+    seiner Gruppe zugeordnet und als Slot→Buchstabe gespeichert. Schreibt nur, wenn
+    alle 8 Slots aufgelöst und gültig sind."""
+    try:
+        remote = fetch_remote()
+    except Exception as exc:
+        return f"❌ Konnte openfootball nicht laden: {escape(str(exc))}"
+    rm = remote.get("matches", [])
+    if len(rm) != len(MATCHES):
+        return f"❌ Spielanzahl weicht ab (lokal {len(MATCHES)}, remote {len(rm)}) – abgebrochen."
+
+    # Team -> Gruppenbuchstabe aus den Gruppenspielen der API
+    team_group: dict[str, str] = {}
+    for m in rm:
+        grp = m.get("group")
+        if grp:
+            letter = grp.replace("Group ", "")
+            for t in (m.get("team1"), m.get("team2")):
+                if t:
+                    team_group[t] = letter
+
+    mapping: dict[str, str] = {}
+    open_slots: list[str] = []
+    errors: list[str] = []
+
+    for local in MATCHES:
+        for idx, token in enumerate((local.team1, local.team2)):
+            if not (token.startswith("3") and "/" in token):
+                continue  # nur Dritten-Slots
+            remote_team = (rm[local.id - 1].get("team1"), rm[local.id - 1].get("team2"))[idx]
+            if not remote_team or _is_placeholder(remote_team):
+                open_slots.append(f"#{local.id} {token}")
+                continue
+            letter = team_group.get(remote_team)
+            if letter is None:
+                errors.append(f"#{local.id}: '{escape(remote_team)}' keiner Gruppe zuzuordnen")
+            elif letter not in _slot_groups(token):
+                errors.append(f"#{local.id} {token}: {escape(remote_team)} (Gruppe {letter}) nicht erlaubt")
+            else:
+                mapping[token] = letter
+
+    # Jede Gruppe darf nur einen Slot füllen
+    seen: dict[str, str] = {}
+    for slot, letter in mapping.items():
+        if letter in seen:
+            errors.append(f"Gruppe {letter} doppelt ({seen[letter]} & {slot})")
+        seen[letter] = slot
+
+    if errors:
+        return "❌ Probleme beim Ableiten:\n" + "\n".join(errors)
+    if open_slots:
+        return (
+            f"⏳ openfootball noch nicht so weit – {len(open_slots)} von 8 "
+            "Dritten-Slots offen:\n" + "\n".join(open_slots) + "\n\nSpäter nochmal /setthirds."
+        )
+
+    THIRDS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    THIRDS_FILE.write_text(json.dumps(mapping, indent=2, ensure_ascii=False), encoding="utf-8")
+    lines = "\n".join(f"{slot} → Gruppe {letter}" for slot, letter in mapping.items())
+    return f"✅ <b>thirds.json gesetzt</b> – K.o.-Tippen freigeschaltet:\n<pre>{lines}</pre>"
+
+
 HELP_TEXT = (
     "⚽ <b>WM 26 Tippspiel</b>\n\n"
     "/board – Leaderboard\n"
+    "/board alt – Leaderboard mit alternativer Wertung\n"
     "/champions – wer hat wen als Weltmeister getippt\n"
     "/upcoming [name] [n] – nächste offene Spiele + Tipps\n"
     "/history [name] [n] – gespielte Spiele + Tipps\n"
@@ -335,6 +523,8 @@ HELP_TEXT = (
 ADVANCED_HELP_TEXT = (
     "🔧 <b>Erweitert – Verwalten</b>\n\n"
     "/result &lt;nr&gt; &lt;ergebnis&gt; – Ergebnis eintragen (z.B. /result 1 2:1)\n"
+    "/ko &lt;name&gt; [nr] – K.o.-Spiele durchtippen (nr = ein Spiel neu tippen)\n"
+    "/setthirds – Gruppendritte aus openfootball ableiten (schaltet /ko frei)\n"
     "/template – leere Tipp-Vorlage (.bet) herunterladen\n"
     "/get &lt;name&gt; – Tipp-Datei (.bet) herunterladen\n"
     "/getall – alle Tipp-Dateien als ZIP herunterladen\n"
@@ -367,7 +557,9 @@ def build_bot() -> telebot.TeleBot:
     @bot.message_handler(commands=["board"])
     def _board(msg):
         _auto_sync()
-        bot.reply_to(msg, format_board())
+        parts = msg.text.split()
+        alt = len(parts) > 1 and parts[1].lower().startswith("alt")
+        bot.reply_to(msg, format_board(alt))
 
     @bot.message_handler(commands=["champions"])
     def _champions(msg):
@@ -390,6 +582,43 @@ def build_bot() -> telebot.TeleBot:
     def _result(msg):
         args = msg.text.split()[1:]
         bot.reply_to(msg, do_result(args))
+
+    @bot.message_handler(commands=["setthirds"])
+    def _setthirds(msg):
+        bot.reply_to(msg, do_setthirds())
+
+    @bot.message_handler(commands=["ko"])
+    def _ko(msg):
+        if msg.chat.type != "private":
+            bot.reply_to(
+                msg,
+                "🔒 K.o.-Tippen geht nur im Direktchat mit mir (sonst kollidieren "
+                "mehrere Tipper). Schreib mir privat: <code>/ko &lt;name&gt;</code>",
+            )
+            return
+        parts = msg.text.split()
+        if len(parts) < 2:
+            names = ", ".join(escape(b.name) for b in load_bets()) or "—"
+            bot.reply_to(msg, f"Nutzung: <code>/ko &lt;name&gt;</code>\nVorhanden: {names}")
+            return
+        name = parts[1]
+        if not _bet_path(name).exists():
+            bot.reply_to(msg, f"Kein Tipp-File '{escape(name)}'.")
+            return
+        if not load_thirds():
+            bot.reply_to(
+                msg,
+                "🔒 K.o.-Tippen ist noch nicht freigeschaltet – die Gruppendritten "
+                "stehen noch nicht fest.",
+            )
+            return
+        if len(parts) >= 3:  # gezielt ein Spiel neu tippen: /ko <name> <nr>
+            if not parts[2].isdigit() or not (KO_FIRST <= int(parts[2]) <= KO_LAST):
+                bot.reply_to(msg, f"K.o.-Spiel-Nr muss zwischen {KO_FIRST} und {KO_LAST} liegen.")
+                return
+            ko_present(bot, msg.chat.id, name, int(parts[2]), advance=False)
+            return
+        ko_send_next(bot, msg.chat.id, name)
 
     @bot.message_handler(commands=["template"])
     def _template(msg):

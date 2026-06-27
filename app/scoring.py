@@ -63,3 +63,34 @@ def score_match(prediction: str, actual: str) -> MatchScore:
 
     cats = [ausgang, tordiff, tore_heim, tore_auswaerts, bonus]
     return MatchScore(points=sum(cats), categories=cats)
+
+
+# Kategorie-Namen der Alt-Wertung (für /board alt)
+CATEGORY_NAMES_ALT = ["ausgang", "tordifferenz", "tore_seite", "tore_gesamt", "bonus"]
+
+
+def score_match_alt(prediction: str, actual: str) -> MatchScore:
+    """Alternative Wertung (max. 5 Punkte pro Spiel):
+      1. richtiger Ausgang (Sieg/Unentschieden/Niederlage)
+      2. richtige Tordifferenz
+      3. richtige Toranzahl einer Seite (Heim ODER Auswärts ODER beide)
+      4. richtige Gesamtzahl Tore (Heim + Auswärts)
+      5. Bonus: wenn 1–4 alle stimmen
+    """
+    pred = parse_score(prediction)
+    real = parse_score(actual)
+
+    if pred is None or real is None:
+        return MatchScore(points=0, categories=[False] * 5)
+
+    ph, pa = pred
+    rh, ra = real
+
+    ausgang = _outcome(ph, pa) == _outcome(rh, ra)
+    tordiff = (ph - pa) == (rh - ra)
+    tore_seite = (ph == rh) or (pa == ra)
+    tore_gesamt = (ph + pa) == (rh + ra)
+    bonus = ausgang and tordiff and tore_seite and tore_gesamt
+
+    cats = [ausgang, tordiff, tore_seite, tore_gesamt, bonus]
+    return MatchScore(points=sum(cats), categories=cats)
