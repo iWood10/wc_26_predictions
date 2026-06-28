@@ -12,7 +12,7 @@ Für den richtigen Weltmeister gibt es zusätzlich CHAMPION_POINTS.
 
 from dataclasses import dataclass
 
-CHAMPION_POINTS = 50
+CHAMPION_POINTS = 30
 
 # Reihenfolge der Kategorie-Häkchen (für die History-Anzeige)
 CATEGORY_NAMES = ["ausgang", "tordifferenz", "tore_heim", "tore_auswaerts", "bonus"]

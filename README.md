@@ -15,7 +15,7 @@ Pro Spiel max. **5 Punkte**:
 | Tore Auswärts absolut | 1 |
 | Bonus: exaktes Ergebnis (alle vier richtig) | 1 |
 
-Plus **50 Punkte** für den richtigen Weltmeister (wird automatisch aus dem
+Plus **30 Punkte** für den richtigen Weltmeister (wird automatisch aus dem
 Finale abgeleitet). K.o.-Spiele: nur das Endergebnis zählt (inkl. Verlängerung/
 Elfmeterschießen).
 
@@ -31,7 +31,7 @@ Gleicher Max (5 Punkte/Spiel), aber leicht andere Kriterien:
 | Richtige Gesamtzahl Tore (Heim + Auswärts) | 1 |
 | Bonus: wenn alle vier stimmen | 1 |
 
-Der Weltmeister-Bonus (50) bleibt gleich. `/board alt` ändert nur die Spiel-Wertung
+Der Weltmeister-Bonus (30) bleibt gleich. `/board alt` ändert nur die Spiel-Wertung
 und schreibt nichts – es ist eine reine Vergleichsansicht.
 
 ## Befehle
@@ -45,7 +45,6 @@ und schreibt nichts – es ist eine reine Vergleichsansicht.
 | `/history [name] [n]` | gespielte Spiele + Tipps (mit Name: Kategorie-Häkchen) |
 | `/result <nr> <ergebnis>` | Ergebnis eintragen/korrigieren (z.B. `/result 1 2:1`) |
 | `/ko <name> [nr]` | K.o.-Spiele durchtippen (`nr` = ein Spiel neu tippen) |
-| `/setthirds` | Gruppendritte aus openfootball ableiten → schaltet `/ko` frei |
 | `/get <name>` | Tipp-Datei (`.bet`) herunterladen |
 | `/getall` | alle Tipp-Dateien als ZIP herunterladen |
 | `/delete <name>` | Tipp-Datei löschen (Papierkorb) |
@@ -71,9 +70,9 @@ Sechzehntel → Achtel → Viertel → … → Finale (IDs 73–104).
 - K.o.-Spiele brauchen einen Sieger: ein Unentschieden wird abgelehnt (Elfmeterschießen).
 - **Freigeschaltet erst, wenn `data/thirds.json` gesetzt ist** (Ende der Vorrunde) –
   vorher können die Gruppendritten-Gegner im Sechzehntelfinale nicht aufgelöst werden.
-  Mit **`/setthirds`** wird die Datei automatisch aus openfootball abgeleitet (sobald
-  die Quelle die Dritten-Slots aufgelöst hat); meldet sonst, wie viele Slots noch offen
-  sind. Alternativ `data/thirds.json` von Hand anlegen (`Slot → Gruppenbuchstabe`).
+  Die Datei ordnet jeden Dritten-Slot einem Gruppenbuchstaben zu (`Slot → Gruppe`,
+  z.B. `"3A/B/C/D/F": "D"`) und wird einmalig nach der Vorrunde anhand der offiziellen
+  Auslosung gesetzt.
 - Am besten im **Direktchat** mit dem Bot nutzen (der Flow merkt sich den nächsten
   Schritt pro Chat).
 

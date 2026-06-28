@@ -15,7 +15,10 @@ wheels/
 # Laufzeit-Daten – leben auf dem Server, per Bot gepflegt (nicht in git,
 # sonst kollidiert jeder git pull mit den Live-Änderungen)
 data/results.json
-data/thirds.json
 data/deleted/
 data/bets/*
 !data/bets/.gitkeep
+
+# data/thirds.json ist KEINE Laufzeit-Daten, sondern statische Config:
+# einmal nach der Vorrunde gesetzt, ändert sich danach nie -> bewusst in git,
+# damit sie per git pull auf den Server kommt (schaltet /ko frei).
