@@ -3,6 +3,7 @@
 Befehle:
     /board [alt]            Leaderboard (alt = alternative Spiel-Wertung)
     /champions              wer hat wen als Weltmeister getippt
+    /bonus [name]           Weiterkommen-Bonus (Übersicht, oder je Runde mit Name)
     /upcoming [name] [n]    nächste offene Spiele + Tipps
     /history [name] [n]     gespielte Spiele + Tipps (mit Name: ✅❌-Detail)
     /result <nr> <ergebnis> Ergebnis eintragen/korrigieren  (z.B. /result 1 2:1)
@@ -17,6 +18,10 @@ Befehle:
 
 Bei /upcoming und /history sind name (Spieler-Filter) und n (Anzahl Spiele)
 optional und in beliebiger Reihenfolge.
+
+Sobald alle 104 Spiele ein Ergebnis haben, liefert /board automatisch die
+Finale Edition (Endstand + Auszeichnungen + Chart) statt des normalen
+Leaderboards – siehe format_finale().
 
 Ergebnisse werden vor /board, /upcoming und /history automatisch von
 openfootball abgeglichen (gedrosselt auf max. 1× pro 60 s).
@@ -39,11 +44,21 @@ from pathlib import Path
 import telebot
 from dotenv import load_dotenv
 
+from app import awards
 from app.bets import BET_EXT, BETS_DIR, load_bets
 from app.bracket import build_bracket, load_thirds
+from app.chart import render_progress_chart
 from app.results import Results, load_results, set_match_result
 from app.scoring import parse_score, score_match, score_match_alt
-from app.standings import history, leaderboard, match_tips
+from app.standings import (
+    advancement_breakdown,
+    advancement_points,
+    champion_points,
+    history,
+    leaderboard,
+    match_tips,
+    total_points,
+)
 from app.sync import sync_results
 from app.tournament import load_matches
 
@@ -109,7 +124,7 @@ def format_board(alt: bool = False) -> str:
     results = load_results()
     champion = build_bracket(MATCHES, results).champion()
     scorer = score_match_alt if alt else score_match
-    ranked = leaderboard(bets, results, champion, scorer)
+    ranked = leaderboard(bets, results, champion, MATCHES, scorer)
 
     width = max(len(bet.name) for bet, _ in ranked)
     title = "🏆 <b>Leaderboard (Alt-Wertung)</b>" if alt else "🏆 <b>Leaderboard</b>"
@@ -120,6 +135,128 @@ def format_board(alt: bool = False) -> str:
     if champion:
         lines.append(f"👑 Weltmeister: <b>{escape(champion)}</b>")
     return "\n".join(lines)
+
+
+def _all_played(results: Results, matches: list) -> bool:
+    return all(results.result_for(m.id) is not None for m in matches)
+
+
+def _award_lines(a: "awards.Awards", bracket=None) -> list[str]:
+    """Die 10 Auszeichnungen als fertige Textzeilen (leer, wenn keine Daten)."""
+    lines = []
+
+    if a.exact_hits:
+        name, n = a.exact_hits[0]
+        lines.append(f"🎯 Meiste exakte Tipps: <b>{escape(name)}</b> ({n}×)")
+    if a.boldness:
+        name, v = a.boldness[0]
+        lines.append(f"🔥 Mutigster Tipper: <b>{escape(name)}</b> (Ø {v:.1f} Tore vom Gruppenschnitt)")
+    if a.precision:
+        name, v = a.precision[0]
+        lines.append(f"📏 Der Genaue: <b>{escape(name)}</b> (Ø {v:.1f} Tore Abweichung vom Ergebnis)")
+    if a.exotic:
+        e = a.exotic
+        m = MATCHES_BY_ID[e.match_id]
+        t1, t2 = _teams_for(bracket, m) if bracket else (escape(m.team1), escape(m.team2))
+        lines.append(
+            f"🦄 Exotischster Treffer: <b>{escape(e.name)}</b> — "
+            f"{t1}–{t2} {escape(e.score)} "
+            f"({'als einzige/r richtig' if e.others_correct == 0 else f'nur {e.others_correct} weitere auch richtig'})"
+        )
+    if a.worst:
+        w = a.worst
+        m = MATCHES_BY_ID[w.match_id]
+        t1, t2 = _teams_for(bracket, m) if bracket else (escape(m.team1), escape(m.team2))
+        lines.append(
+            f"🧱 Schlechtester Tipp: <b>{escape(w.name)}</b> — {t1}–{t2} "
+            f"getippt {escape(w.prediction)}, real {escape(w.actual)} ({w.distance} Tore daneben)"
+        )
+    if a.ko_oracle:
+        name, n = a.ko_oracle[0]
+        lines.append(f"🔮 Orakel der K.o.-Runde: <b>{escape(name)}</b> ({n} Pkt aus K.o.-Spielen)")
+    if a.draw_king:
+        name, n = a.draw_king[0]
+        lines.append(f"🤝 Remis-König: <b>{escape(name)}</b> ({n} exakte Unentschieden)")
+    if a.underdog:
+        name, n = a.underdog[0]
+        lines.append(f"🐴 Underdog-Riecher: <b>{escape(name)}</b> ({n}× richtig gegen die Mehrheit)")
+    if a.rank_swing:
+        top_name, top_v = a.rank_swing[0]
+        bottom_name, bottom_v = a.rank_swing[-1]
+        parts = []
+        if top_v > 0:
+            parts.append(f"Aufholjagd: <b>{escape(top_name)}</b> (+{top_v} Plätze)")
+        if bottom_v < 0 and bottom_name != top_name:
+            parts.append(f"Absturz: <b>{escape(bottom_name)}</b> ({bottom_v} Plätze)")
+        if parts:
+            lines.append("🎢 " + " · ".join(parts))
+    if a.goal_appetite:
+        top_name, top_v = a.goal_appetite[0]
+        low_name, low_v = a.goal_appetite[-1]
+        lines.append(
+            f"⚽ Torfabrik: <b>{escape(top_name)}</b> (Ø {top_v:.1f} Tore/Spiel) · "
+            f"Beton: <b>{escape(low_name)}</b> (Ø {low_v:.1f})"
+        )
+    return lines
+
+
+def format_finale() -> tuple[str, bytes | None]:
+    """Die große Finale-Edition-Zusammenfassung (Text + Chart-PNG), sobald alle
+    104 Spiele ein Ergebnis haben. Gibt (text, chart_png_oder_None) zurück."""
+    bets = load_bets()
+    if not bets:
+        return "Noch keine Tipps abgegeben.", None
+    results = load_results()
+    bracket = build_bracket(MATCHES, results)
+    champion = bracket.champion()
+    scorer = score_match
+
+    ranked = leaderboard(bets, results, champion, MATCHES, scorer)
+    width = max(len(bet.name) for bet, _ in ranked)
+
+    lines = ["🏁 <b>FINALE EDITION</b>", "Alle 104 Spiele sind gewertet – hier ist der Endstand!", ""]
+
+    if champion:
+        hits = [escape(bet.name) for bet, _ in ranked if bet.champion == champion]
+        who = ", ".join(hits) if hits else "niemand"
+        lines.append(f"👑 Weltmeister: <b>{escape(champion)}</b> — richtig getippt: {who}")
+        lines.append("")
+
+    lines.append("🏆 <b>Endstand</b>")
+    lines.append("<pre>")
+    for rank, (bet, points) in enumerate(ranked, start=1):
+        game_pts = total_points(bet, results, champion, scorer) - champion_points(bet, champion)
+        champ_pts = champion_points(bet, champion)
+        bonus_pts = advancement_points(bet, results, MATCHES, bracket)
+        lines.append(
+            f"{rank}. {escape(f'{bet.name:<{width}}')}  {points:>4}  "
+            f"(Spiele {game_pts} · WM {champ_pts} · Bonus {bonus_pts})"
+        )
+    lines.append("</pre>")
+    lines.append("")
+
+    lines.append("🎖️ <b>Auszeichnungen</b>")
+    lines.append("")
+    a = awards.compute_all(bets, results, MATCHES)
+    lines.extend(_award_lines(a, bracket))
+    lines.append("")
+
+    best_name, best_pts = (ranked[0][0].name, ranked[0][1]) if ranked else ("—", 0)
+    pct = round(100 * best_pts / a.max_possible) if a.max_possible else 0
+    lines.append(
+        f"💭 Was möglich gewesen wäre: <b>{a.max_possible}</b> Punkte — "
+        f"bester Wert: {escape(best_name)} mit {best_pts} ({pct}%)"
+    )
+
+    chart_png = None
+    if len(bets) >= 2:
+        try:
+            cumulative = awards.cumulative_totals(bets, results, MATCHES)
+            chart_png = render_progress_chart(cumulative)
+        except Exception as exc:  # Chart-Fehler dürfen die Text-Ausgabe nie verhindern
+            print(f"[finale] Chart-Fehler: {exc}")
+
+    return "\n".join(lines), chart_png
 
 
 def format_champions() -> str:
@@ -139,6 +276,55 @@ def format_champions() -> str:
     out.append("</pre>")
     if champion:
         out.append(f"Steht fest: <b>{escape(champion)}</b>")
+    return "\n".join(out)
+
+
+def format_bonus_overview() -> str:
+    """Weiterkommen-Bonus aller Spieler als kompakte Tabelle (richtige Teams je Runde)."""
+    bets = load_bets()
+    if not bets:
+        return "Noch keine Tipps abgegeben."
+    results = load_results()
+    actual = build_bracket(MATCHES, results)
+
+    rows = []
+    for bet in bets:
+        breakdown = advancement_breakdown(bet, results, MATCHES, actual)
+        counts = [len(r.correct) for r in breakdown]  # AF, VF, HF, Fi
+        bonus = sum(r.points for r in breakdown)
+        rows.append((bet.name, counts, bonus))
+    rows.sort(key=lambda r: r[2], reverse=True)
+
+    width = max(len(name) for name, _, _ in rows)
+    head = f"{'':<{width}}" + "".join(f"{h:>4}" for h in ("AF", "VF", "HF", "Fi")) + f"{'Σ':>6}"
+    out = ["🔮 <b>Weiterkommen-Bonus</b>", "<pre>", head]
+    for name, counts, bonus in rows:
+        line = f"{name:<{width}}" + "".join(f"{c:>4}" for c in counts) + f"{bonus:>6}"
+        out.append(escape(line))
+    out.append("</pre>")
+    out.append("<i>richtige Teams je Runde · AF/16 VF/8 HF/4 Fi/2 · Σ = Bonuspunkte</i>")
+    return "\n".join(out)
+
+
+def format_bonus(name: str) -> str:
+    """Weiterkommen-Bonus eines Spielers pro Runde (vorhergesagte vs. echte Teams)."""
+    bets = load_bets()
+    bet, err = _resolve_bet(name, bets)
+    if bet is None:
+        return err
+    results = load_results()
+    actual = build_bracket(MATCHES, results)
+    rows = advancement_breakdown(bet, results, MATCHES, actual)
+
+    out = [f"🔮 <b>Weiterkommen — {escape(bet.name)}</b>", ""]
+    total = 0
+    for r in rows:
+        total += r.points
+        teams = ", ".join(escape(t) for t in r.correct) or "—"
+        out.append(f"<b>{r.round_name}</b> ({r.per_team}/Team): {len(r.correct)} → {r.points} Pkt")
+        out.append(f"   {teams}")
+    out.append("")
+    out.append(f"Bonus gesamt: <b>{total}</b>")
     return "\n".join(out)
 
 
@@ -465,6 +651,7 @@ HELP_TEXT = (
     "/board – Leaderboard\n"
     "/board alt – Leaderboard mit alternativer Wertung\n"
     "/champions – wer hat wen als Weltmeister getippt\n"
+    "/bonus [name] – Weiterkommen-Bonus (Übersicht, oder je Runde mit Name)\n"
     "/upcoming [name] [n] – nächste offene Spiele + Tipps\n"
     "/history [name] [n] – gespielte Spiele + Tipps\n"
     "<i>name filtert auf einen Spieler, n = wie viele Spiele.</i>\n\n"
@@ -510,12 +697,27 @@ def build_bot() -> telebot.TeleBot:
         _auto_sync()
         parts = msg.text.split()
         alt = len(parts) > 1 and parts[1].lower().startswith("alt")
+        if not alt and _all_played(load_results(), MATCHES):
+            text, chart_png = format_finale()
+            bot.reply_to(msg, text)
+            if chart_png:
+                bot.send_photo(msg.chat.id, chart_png)
+            return
         bot.reply_to(msg, format_board(alt))
 
     @bot.message_handler(commands=["champions"])
     def _champions(msg):
         _auto_sync()
         bot.reply_to(msg, format_champions())
+
+    @bot.message_handler(commands=["bonus"])
+    def _bonus(msg):
+        _auto_sync()
+        parts = msg.text.split()
+        if len(parts) < 2:
+            bot.reply_to(msg, format_bonus_overview())  # ohne Name: Gesamtübersicht
+            return
+        bot.reply_to(msg, format_bonus(parts[1]))
 
     @bot.message_handler(commands=["upcoming"])
     def _upcoming(msg):

@@ -3,10 +3,20 @@
 from dataclasses import dataclass
 
 from app.bets import Bet
-from app.bracket import Bracket
+from app.bracket import Bracket, build_bracket
 from app.results import Results
 from app.scoring import CHAMPION_POINTS, MatchScore, score_match
 from app.tournament import Match
+
+# Weiterkommen-Bonus: Runde -> (Match-IDs der Runde, Punkte je richtig
+# vorhergesagtem Team). Sechzehntel zählt nicht (steht schon über die Gruppen fest),
+# Spiel um Platz 3 (#103) auch nicht.
+ADVANCE_ROUNDS: list[tuple[str, tuple[int, ...], int]] = [
+    ("Achtelfinale", tuple(range(89, 97)), 1),
+    ("Viertelfinale", tuple(range(97, 101)), 2),
+    ("Halbfinale", (101, 102), 3),
+    ("Finale", (104,), 5),
+]
 
 
 @dataclass
@@ -61,11 +71,70 @@ def total_points(
     return total + champion_points(bet, champion)
 
 
+@dataclass
+class AdvanceRow:
+    round_name: str
+    per_team: int          # Punkte je richtig vorhergesagtem Team
+    correct: list[str]     # korrekt vorhergesagte Teams dieser Runde
+    points: int
+
+
+def _round_teams(bracket: Bracket, match_ids: tuple[int, ...]) -> set[str]:
+    """Aufgelöste Teams, die in den Spielen dieser Runde stehen (None fällt raus)."""
+    teams: set[str] = set()
+    for mid in match_ids:
+        for team in bracket.teams_for(mid):
+            if team:
+                teams.add(team)
+    return teams
+
+
+def predicted_bracket(bet: Bet, results: Results, matches: list[Match]) -> Bracket:
+    """Bracket des Spielers: echte Gruppenergebnisse (feste R32-Paarungen) + eigene
+    K.o.-Tipps. Ein fehlender K.o.-Tipp lässt den Zweig 'abbrechen' (Sieger = None),
+    sodass daraus keine Teams für spätere Runden vorhergesagt werden."""
+    merged = {k: v for k, v in results.matches.items() if int(k) <= 72}
+    merged.update({k: v for k, v in bet.predictions.items() if int(k) >= 73})
+    return build_bracket(matches, Results(matches=merged))
+
+
+def advancement_breakdown(
+    bet: Bet, results: Results, matches: list[Match], actual: Bracket
+) -> list[AdvanceRow]:
+    """Weiterkommen-Bonus je Runde: Schnittmenge aus vorhergesagten und echten Teams."""
+    pred = predicted_bracket(bet, results, matches)
+    rows = []
+    for name, ids, per in ADVANCE_ROUNDS:
+        correct = sorted(_round_teams(pred, ids) & _round_teams(actual, ids))
+        rows.append(AdvanceRow(name, per, correct, len(correct) * per))
+    return rows
+
+
+def advancement_points(
+    bet: Bet, results: Results, matches: list[Match], actual: Bracket
+) -> int:
+    """Gesamter Weiterkommen-Bonus eines Spielers."""
+    return sum(r.points for r in advancement_breakdown(bet, results, matches, actual))
+
+
 def leaderboard(
-    bets: list[Bet], results: Results, champion: str | None, scorer=score_match
+    bets: list[Bet],
+    results: Results,
+    champion: str | None,
+    matches: list[Match],
+    scorer=score_match,
 ) -> list[tuple[Bet, int]]:
-    """Spieler nach Punkten sortiert (höchste zuerst)."""
-    ranked = [(bet, total_points(bet, results, champion, scorer)) for bet in bets]
+    """Spieler nach Punkten sortiert (höchste zuerst).
+    Enthält Spiel-Tipps + Weltmeister-Bonus + Weiterkommen-Bonus."""
+    actual = build_bracket(matches, results)
+    ranked = [
+        (
+            bet,
+            total_points(bet, results, champion, scorer)
+            + advancement_points(bet, results, matches, actual),
+        )
+        for bet in bets
+    ]
     ranked.sort(key=lambda pair: pair[1], reverse=True)
     return ranked
 

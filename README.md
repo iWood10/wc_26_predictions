@@ -19,6 +19,26 @@ Plus **30 Punkte** für den richtigen Weltmeister (wird automatisch aus dem
 Finale abgeleitet). K.o.-Spiele: nur das Endergebnis zählt (inkl. Verlängerung/
 Elfmeterschießen).
 
+### Weiterkommen-Bonus (K.o.-Runden)
+
+Zusätzlich Punkte dafür, **welche Teams eine Runde erreichen** – je richtig
+vorhergesagtem Team (aus den eigenen K.o.-Tipps):
+
+| Runde | Punkte je Team |
+|---|---|
+| Achtelfinale | 1 |
+| Viertelfinale | 2 |
+| Halbfinale | 3 |
+| Finale | 5 |
+
+Pro Runde wird die Menge der Teams, die *laut den eigenen Tipps* dort steht, mit
+den *tatsächlich* dort stehenden Teams geschnitten (Reihenfolge egal). Die R32-Paarungen
+stehen über die Gruppenergebnisse fest; die K.o.-Sieger kommen aus den `/ko`-Tipps.
+Fehlt ein Tipp, bricht der Zweig ab – daraus lässt sich kein Team einer späteren Runde
+vorhersagen (keine Punkte). Der Bonus zählt in die `/board`-Gesamtwertung.
+**`/bonus`** zeigt die Gesamtübersicht (richtige Teams je Runde pro Spieler),
+**`/bonus <name>`** die Runden-Aufschlüsselung eines Spielers.
+
 ### Alternative Wertung (`/board alt`)
 
 Gleicher Max (5 Punkte/Spiel), aber leicht andere Kriterien:
@@ -41,6 +61,7 @@ und schreibt nichts – es ist eine reine Vergleichsansicht.
 | `/board` | Leaderboard (mit 👑 Weltmeister, sobald er feststeht) |
 | `/board alt` | Leaderboard mit alternativer Spiel-Wertung (s.u.) |
 | `/champions` | wer hat wen als Weltmeister getippt |
+| `/bonus [name]` | Weiterkommen-Bonus (Übersicht, oder je Runde mit Name) |
 | `/upcoming [name] [n]` | nächste offene Spiele + Tipps |
 | `/history [name] [n]` | gespielte Spiele + Tipps (mit Name: Kategorie-Häkchen) |
 | `/result <nr> <ergebnis>` | Ergebnis eintragen/korrigieren (z.B. `/result 1 2:1`) |
@@ -79,6 +100,24 @@ Sechzehntel → Achtel → Viertel → … → Finale (IDs 73–104).
 Vor `/board`, `/history`, `/upcoming` werden die Ergebnisse automatisch von
 [openfootball](https://github.com/openfootball/worldcup.json) abgeglichen
 (gedrosselt auf max. 1× pro 60 s). `/result` überschreibt der Auto-Sync nie.
+
+### Finale Edition
+
+Sobald **alle 104 Spiele** ein Ergebnis haben, liefert `/board` (ohne `alt`)
+automatisch eine große Zusammenfassung statt des normalen Leaderboards –
+kein eigener Befehl, kein Hintergrund-Job, nur eine Prüfung im `/board`-Handler:
+
+- 👑 Weltmeister + wer ihn richtig getippt hat
+- Endstand **aller** Spieler mit Punkte-Aufschlüsselung (Spiele / WM-Bonus / Weiterkommen-Bonus)
+- ein Chart als Bild: Punkteverlauf über die 104 Spiele, relativ zum Gruppen-
+  schnitt (gemeinsame Steigung rausgerechnet, nur die relative Position bleibt sichtbar)
+- 10 Auszeichnungen (meiste exakte Tipps, mutigster Tipper, exotischster Treffer,
+  schlechtester Tipp, Orakel der K.o.-Runde, Remis-König, Underdog-Riecher,
+  Aufholjagd/Absturz, der Genaue, Torfabrik/Beton)
+- „Was möglich gewesen wäre" – das theoretische Punktemaximum
+
+Die Berechnungen stecken in `app/awards.py` (reine Funktionen, kein I/O), das
+Chart-Rendering in `app/chart.py` (matplotlib, PNG für `bot.send_photo`).
 
 ## Einrichtung
 
@@ -122,7 +161,8 @@ git pull && docker compose up -d --build
   (`predictions`: Spiel-Nr → `"heim:auswärts"`, dazu `champion`).
 - `data/results.json` – eingetragene Ergebnisse. **Nicht** in git.
 - `data/thirds.json` – Zuordnung der besten Gruppendritten (einmalig Ende der
-  Vorrunde zu setzen). **Nicht** in git.
+  Vorrunde zu setzen). Statische Config, **ist** in git (ändert sich nach dem
+  Setzen nicht mehr, kommt so per `git pull` auf den Server).
 
 Laufzeit-Daten liegen bewusst außerhalb von git, damit ein `git pull` auf dem
 Server nie mit den Live-Änderungen kollidiert.
@@ -138,6 +178,8 @@ app/
   bets.py        Tipps laden
   results.py     Ergebnisse laden/speichern
   standings.py   Leaderboard + History
+  awards.py      Auszeichnungen der Finale Edition (10 Kategorien)
+  chart.py       Punkteverlauf-Chart als PNG (Finale Edition)
   sync.py        Ergebnis-Abgleich mit openfootball
   bot.py         Telegram-Oberfläche
 main.py          Startet den Bot
